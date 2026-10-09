@@ -1,14 +1,14 @@
 app_name = "sales_reports"
 app_title = "Sales Person Sales Reports"
 app_publisher = "Ajnas"
-app_description = "Sales Person Wise Transaction Summary"
+app_description = "Sales Person Wise Sales Report"
 app_email = "ajnaso10@gmail.com"
 app_license = "mit"
 
 # Apps
 # ------------------
 
-# required_apps = []
+required_apps = ["erpnext"]
 
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [
@@ -96,13 +96,14 @@ app_license = "mit"
 # ------------
 
 # before_install = "sales_reports.install.before_install"
-# after_install = "sales_reports.install.after_install"
+after_install = "sales_reports.install.after_install"
+after_migrate = "sales_reports.install.after_migrate"
 
 # Uninstallation
 # ------------
 
-# before_uninstall = "sales_reports.uninstall.before_uninstall"
-# after_uninstall = "sales_reports.uninstall.after_uninstall"
+before_uninstall = "sales_reports.uninstall.before_uninstall"
+after_uninstall = "sales_reports.uninstall.after_uninstall"
 
 # Integration Setup
 # ------------------

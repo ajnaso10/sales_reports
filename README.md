@@ -1,6 +1,6 @@
 ### Sales Person Sales Reports
 
-Sales Person Wise Transaction Summary
+Sales Person Wise Sales Report — allocated Sales Invoice performance by Sales Person.
 
 ### Installation
 
