@@ -5,15 +5,16 @@
 
 import frappe
 
-from sales_reports.install import REPORT_NAME, remove_navigation
+from sales_reports.install import REPORT_NAMES, remove_navigation
 
 
 def before_uninstall():
 	try:
 		frappe.clear_cache()
 		remove_navigation()
-		if frappe.db.exists("Report", REPORT_NAME):
-			frappe.delete_doc("Report", REPORT_NAME, force=True, ignore_permissions=True)
+		for report_name in REPORT_NAMES:
+			if frappe.db.exists("Report", report_name):
+				frappe.delete_doc("Report", report_name, force=True, ignore_permissions=True)
 		frappe.clear_cache()
 	except Exception:
 		frappe.log_error(title="Sales Reports before_uninstall failed")
