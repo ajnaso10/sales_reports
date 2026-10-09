@@ -1,7 +1,7 @@
 # Copyright (c) 2026, Ajnas and Contributors
 # License: MIT
 
-"""Clean uninstall handlers for Sales Person Sales Reports."""
+"""Clean uninstall handlers for Sales Reports."""
 
 import frappe
 

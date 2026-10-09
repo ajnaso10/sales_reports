@@ -1,7 +1,7 @@
 # Copyright (c) 2026, Ajnas and Contributors
 # License: MIT
 
-"""Install / migrate handlers for Sales Person Sales Reports."""
+"""Install / migrate handlers for Sales Reports."""
 
 import frappe
 

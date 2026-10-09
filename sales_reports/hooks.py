@@ -1,7 +1,7 @@
 app_name = "sales_reports"
-app_title = "Sales Person Sales Reports"
+app_title = "Sales Reports"
 app_publisher = "Ajnas"
-app_description = "Sales Person Wise Sales Report"
+app_description = "Selling reports: Sales Person Wise Sales and Lead-to-Revenue Conversion"
 app_email = "ajnaso10@gmail.com"
 app_license = "mit"
 

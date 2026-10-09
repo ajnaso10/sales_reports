@@ -1,6 +1,9 @@
-### Sales Person Sales Reports
+### Sales Reports
 
-Sales Person Wise Sales Report — allocated Sales Invoice performance by Sales Person.
+Selling reports for ERPNext:
+
+- **Sales Person Wise Sales Report** — allocated Sales Invoice performance by Sales Person
+- **Lead-to-Revenue Conversion Report** — Lead → Quotation → Customer → Sales Order → Sales Invoice
 
 ### Installation
 
