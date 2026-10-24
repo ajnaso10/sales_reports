@@ -385,8 +385,12 @@ class TestSalesPersonWiseSalesReport(IntegrationTestCase):
 			with self.assertRaises(frappe.PermissionError) as cm:
 				execute(self.filters)
 			self.assertIn(COMPANY, str(cm.exception))
-			with self.assertRaises(frappe.PermissionError):
+			# query_report.run checks the Company link in validate_filters_permissions
+			# before execute(). That raises ValidationError for this user. PermissionError
+			# remains accepted if that check starts raising the permission type instead.
+			with self.assertRaises((frappe.PermissionError, frappe.ValidationError)) as cm:
 				self._desk_run()
+			self.assertIn(COMPANY, str(cm.exception))
 		finally:
 			frappe.set_user("Administrator")
 			frappe.delete_doc("User Permission", blocked, ignore_permissions=True, force=True)
