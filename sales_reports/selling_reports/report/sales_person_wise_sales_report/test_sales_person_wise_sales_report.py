@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
+from frappe.desk.query_report import run as run_query_report
 from frappe.tests import IntegrationTestCase
 from frappe.utils import nowdate
 
-from sales_reports.install import ensure_sales_reports_settings
+from sales_reports.install import ensure_sales_reports_settings, ensure_see_all_report_access
 from sales_reports.selling_reports.report.sales_person_wise_sales_report.sales_person_wise_sales_report import (
 	SCOPE_SEE_ALL,
 	execute,
@@ -41,6 +42,7 @@ class TestSalesPersonWiseSalesReport(IntegrationTestCase):
 		super().setUpClass()
 		frappe.set_user("Administrator")
 		ensure_sales_reports_settings()
+		ensure_see_all_report_access()
 
 		posting_date = nowdate()
 
@@ -121,6 +123,12 @@ class TestSalesPersonWiseSalesReport(IntegrationTestCase):
 		self.assertEqual([row.role for row in doc.own_only_roles], ["Sales User"])
 		self.assertEqual([row.role for row in doc.team_roles], ["Sales Manager"])
 		self.assertEqual([row.role for row in doc.see_all_roles], ["System Manager"])
+
+	def test_report_ref_doctype_is_sales_person(self):
+		self.assertEqual(
+			frappe.db.get_value("Report", "Sales Person Wise Sales Report", "ref_doctype"),
+			"Sales Person",
+		)
 
 	def test_own_role_sees_only_own_rows_and_total(self):
 		frappe.set_user(self.team_rep_user)
@@ -272,8 +280,188 @@ class TestSalesPersonWiseSalesReport(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			doc.save(ignore_permissions=True)
 
+	def test_query_report_run_as_sales_user(self):
+		frappe.set_user(self.team_rep_user)
+		self.assertTrue(frappe.has_permission("Sales Person", "report"))
+		detail, total = self._desk_run()
+		self.assertEqual([row["sales_person"] for row in detail], [self.team_rep])
+		self.assertAlmostEqual(detail[0]["net_sales"], TEAM_REP_AMOUNT, places=2)
+		self.assertEqual(detail[0]["total_invoices"], 1)
+		self.assertAlmostEqual(total["net_sales"], TEAM_REP_AMOUNT, places=2)
+		self.assertEqual(total["total_invoices"], 1)
+
+	def test_query_report_run_as_sales_manager(self):
+		frappe.set_user(self.team_user)
+		self.assertTrue(frappe.has_permission("Sales Person", "report"))
+		detail, total = self._desk_run()
+		self.assertCountEqual([row["sales_person"] for row in detail], [self.team_lead, self.team_rep])
+		self.assertAlmostEqual(total["net_sales"], TEAM_LEAD_AMOUNT + TEAM_REP_AMOUNT, places=2)
+		self.assertEqual(total["total_invoices"], 2)
+
+	def test_query_report_run_as_see_all_system_manager(self):
+		# Stock ERPNext gives System Manager read on Company and no read or
+		# select on Customer. The desk sends a Link filter only when it has a
+		# value, so this call sends the Company link the way the form does on
+		# open, and keeps Customer in the filters so the query stays on this
+		# test's invoices.
+		frappe.set_user(self.see_all_user)
+		self.assertTrue(frappe.has_permission("Sales Person", "report"))
+		detail, total = self._desk_run(link_fields=("company",))
+		self.assertCountEqual([row["sales_person"] for row in detail], self.all_sales_persons)
+		self.assertAlmostEqual(total["net_sales"], self.grand_total, places=2)
+		self.assertEqual(total["total_invoices"], len(self.all_sales_persons))
+
+	def test_query_report_run_as_accounts_user_added_to_see_all(self):
+		frappe.set_user(self.accounts_user)
+		with self.assertRaises(frappe.PermissionError) as cm:
+			self._desk_run()
+		self.assertIn("Sales Person", str(cm.exception))
+
+		frappe.set_user("Administrator")
+		doc = frappe.get_doc("Sales Reports Settings")
+		doc.append("see_all_roles", {"role": "Accounts User"})
+		doc.save(ignore_permissions=True)
+		try:
+			frappe.set_user(self.accounts_user)
+			self.assertTrue(frappe.has_permission("Sales Person", "report"))
+			detail, total = self._desk_run()
+			self.assertCountEqual([row["sales_person"] for row in detail], self.all_sales_persons)
+			self.assertAlmostEqual(total["net_sales"], self.grand_total, places=2)
+			self.assertEqual(total["total_invoices"], len(self.all_sales_persons))
+		finally:
+			frappe.set_user("Administrator")
+			self._remove_see_all_role("Accounts User")
+
+	def test_query_report_run_as_a_see_all_role_that_is_not_on_the_report(self):
+		role = "SPWSR See All"
+		if not frappe.db.exists("Role", role):
+			frappe.get_doc({"doctype": "Role", "role_name": role, "desk_access": 1}).insert(
+				ignore_permissions=True
+			)
+		user = _make_user("spwsr-custom-see-all@example.com", [role])
+		doc = frappe.get_doc("Sales Reports Settings")
+		doc.append("see_all_roles", {"role": role})
+		doc.save(ignore_permissions=True)
+		try:
+			custom_role = frappe.db.get_value(
+				"Custom Role", {"report": "Sales Person Wise Sales Report"}, "name"
+			)
+			custom_roles = frappe.get_all("Has Role", filters={"parent": custom_role}, pluck="role")
+			self.assertIn("Sales User", custom_roles)
+			self.assertIn("Sales Manager", custom_roles)
+			self.assertIn(role, custom_roles)
+
+			frappe.set_user(user)
+			self.assertTrue(frappe.has_permission("Sales Person", "report"))
+			# No Company permission on this role, so the link check is not what
+			# this case covers. An empty js_filters list still goes through
+			# Report.is_permitted and the Sales Person report permission.
+			detail, total = self._desk_run(link_fields=())
+			self.assertCountEqual([row["sales_person"] for row in detail], self.all_sales_persons)
+			self.assertAlmostEqual(total["net_sales"], self.grand_total, places=2)
+		finally:
+			frappe.set_user("Administrator")
+			self._remove_see_all_role(role)
+
+	def test_company_user_permission_on_sales_invoice_is_enforced(self):
+		other = frappe.db.get_value("Company", {"name": ["!=", COMPANY]}, "name")
+		if not other:
+			self.skipTest(
+				"A second Company is required to point a User Permission away from the report company."
+			)
+
+		unrelated = _make_user_permission(self.team_rep_user, "Company", other, "Employee")
+		try:
+			frappe.set_user(self.team_rep_user)
+			detail, _total = self._run()
+			self.assertEqual([row["sales_person"] for row in detail], [self.team_rep])
+		finally:
+			frappe.set_user("Administrator")
+			frappe.delete_doc("User Permission", unrelated, ignore_permissions=True, force=True)
+
+		blocked = _make_user_permission(self.team_rep_user, "Company", other)
+		try:
+			frappe.set_user(self.team_rep_user)
+			with self.assertRaises(frappe.PermissionError) as cm:
+				execute(self.filters)
+			self.assertIn(COMPANY, str(cm.exception))
+			with self.assertRaises(frappe.PermissionError):
+				self._desk_run()
+		finally:
+			frappe.set_user("Administrator")
+			frappe.delete_doc("User Permission", blocked, ignore_permissions=True, force=True)
+
+		allowed = _make_user_permission(self.team_rep_user, "Company", COMPANY, "Sales Invoice")
+		try:
+			frappe.set_user(self.team_rep_user)
+			detail, total = self._desk_run()
+			self.assertEqual([row["sales_person"] for row in detail], [self.team_rep])
+			self.assertAlmostEqual(total["net_sales"], TEAM_REP_AMOUNT, places=2)
+		finally:
+			frappe.set_user("Administrator")
+			frappe.delete_doc("User Permission", allowed, ignore_permissions=True, force=True)
+
+	def test_customer_user_permission_limits_rows_when_the_filter_is_empty(self):
+		other_customer = _make_customer("_Test SPWSR Other Customer")
+		_make_invoice(other_customer, self.team_rep, 25, self.filters["from_date"])
+		permission = _make_user_permission(
+			self.team_rep_user, "Customer", self.filters["customer"], "Sales Invoice"
+		)
+		try:
+			frappe.set_user(self.team_rep_user)
+			filters = {key: value for key, value in self.filters.items() if key != "customer"}
+			detail, total = self._run(filters)
+			self.assertEqual([row["sales_person"] for row in detail], [self.team_rep])
+			self.assertAlmostEqual(detail[0]["net_sales"], TEAM_REP_AMOUNT, places=2)
+			self.assertAlmostEqual(total["net_sales"], TEAM_REP_AMOUNT, places=2)
+			self.assertEqual(total["total_invoices"], 1)
+		finally:
+			frappe.set_user("Administrator")
+			frappe.delete_doc("User Permission", permission, ignore_permissions=True, force=True)
+
+	def test_client_supplied_user_permission_constraints_are_ignored(self):
+		frappe.set_user(self.team_rep_user)
+		filters = {
+			**self.filters,
+			"user_permission_constraints": {
+				"customer": {"docs": ["_Test Missing Customer"], "strict": 1},
+			},
+		}
+		detail, total = self._run(filters)
+		self.assertEqual([row["sales_person"] for row in detail], [self.team_rep])
+		self.assertAlmostEqual(total["net_sales"], TEAM_REP_AMOUNT, places=2)
+
 	def _run(self, filters=None):
 		_columns, data = execute(filters or self.filters)
+		return self._split(data)
+
+	def _desk_run(self, filters=None, link_fields=None):
+		filters = dict(filters or self.filters)
+		options = {
+			"company": "Company",
+			"sales_person": "Sales Person",
+			"customer": "Customer",
+			"territory": "Territory",
+			"item_group": "Item Group",
+			"cost_center": "Cost Center",
+		}
+		if link_fields is None:
+			link_fields = tuple(options)
+		js_filters = [
+			{"fieldname": fieldname, "fieldtype": "Link", "options": options[fieldname]}
+			for fieldname in link_fields
+			if filters.get(fieldname)
+		]
+		result = run_query_report(
+			"Sales Person Wise Sales Report",
+			filters=filters,
+			are_default_filters=False,
+			ignore_prepared_report=True,
+			js_filters=js_filters,
+		)
+		return self._split(result["result"])
+
+	def _split(self, data):
 		label = _("Total")
 		detail = [row for row in data if row.get("sales_person") != label]
 		totals = [row for row in data if row.get("sales_person") == label]
@@ -308,8 +496,7 @@ def _gender():
 	return frappe.get_doc({"doctype": "Gender", "gender": "Female"}).insert(ignore_permissions=True).name
 
 
-def _make_customer():
-	customer_name = "_Test SPWSR Customer"
+def _make_customer(customer_name="_Test SPWSR Customer"):
 	existing = frappe.db.get_value("Customer", {"customer_name": customer_name}, "name")
 	if existing:
 		return existing
@@ -323,6 +510,21 @@ def _make_customer():
 			"customer_name": customer_name,
 			"customer_group": group,
 			"territory": territory,
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	return doc.name
+
+
+def _make_user_permission(user, allow, for_value, applicable_for=None):
+	doc = frappe.get_doc(
+		{
+			"doctype": "User Permission",
+			"user": user,
+			"allow": allow,
+			"for_value": for_value,
+			"apply_to_all_doctypes": 0 if applicable_for else 1,
+			"applicable_for": applicable_for,
 		}
 	)
 	doc.insert(ignore_permissions=True)

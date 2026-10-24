@@ -21,7 +21,7 @@ from erpnext import get_company_currency
 from frappe import _
 from frappe.query_builder import Case
 from frappe.query_builder.functions import Abs, Count, IfNull, Sum
-from frappe.utils import flt, getdate
+from frappe.utils import cint, flt, getdate
 
 from sales_reports.install import ensure_sales_reports_settings
 
@@ -39,8 +39,10 @@ def execute(filters=None):
 	# Ignore a client-supplied allow-list. Export and frappe.desk.query_report.run
 	# both call execute(), so this is the only data path.
 	filters.pop("allowed_sales_persons", None)
+	filters.pop("user_permission_constraints", None)
 	validate_filters(filters)
 	apply_sales_person_scope(filters)
+	apply_sales_invoice_user_permissions(filters)
 	columns = get_columns()
 	data = get_data(filters)
 	return columns, data
@@ -233,10 +235,12 @@ def joined_query(filters, si, sii, st):
 	if filters.get("customer"):
 		doc_filters["customer"] = filters.customer
 
-	# Sales Invoice select/read is granted to Accounts roles, not to Sales User,
-	# Sales Manager, or System Manager. This report's audience is those sales
-	# roles, so the query is not gated on Sales Invoice permissions. Who can run
-	# it, and which Sales Persons they see, is apply_sales_person_scope above.
+	# Sales Invoice select/read is granted to Accounts roles. Sales User, Sales
+	# Manager, and System Manager would get no rows if this query checked those
+	# permissions. ignore_permissions skips that role check and also skips User
+	# Permissions on Sales Invoice. apply_sales_invoice_user_permissions puts
+	# the Company / Customer / Territory / Item Group / Cost Center User
+	# Permissions back on, and company is always in doc_filters above.
 	# The same joined_query builds the grouped rows, the Total row, and the
 	# distinct invoice count.
 	query = (
@@ -250,7 +254,95 @@ def joined_query(filters, si, sii, st):
 	query = apply_tree_filter(query, si.territory, "Territory", filters.get("territory"))
 	query = apply_tree_filter(query, sii.item_group, "Item Group", filters.get("item_group"))
 	query = apply_tree_filter(query, sii.cost_center, "Cost Center", filters.get("cost_center"))
+	query = apply_user_permission_constraints(query, filters, si, sii)
 	return apply_allowed_sales_persons(query, st.sales_person, filters)
+
+
+# User Permissions that apply to Sales Invoice and match a filter on this report.
+# Company is required, so it is checked up front and kept in doc_filters.
+SALES_INVOICE_USER_PERMISSION_FIELDS = (
+	("customer", "Customer"),
+	("territory", "Territory"),
+	("item_group", "Item Group"),
+	("cost_center", "Cost Center"),
+)
+
+
+def apply_sales_invoice_user_permissions(filters):
+	"""Put Sales Invoice User Permissions back onto a query that ignores them.
+
+	Administrator has no User Permissions. For everyone else, a Company User
+	Permission that applies to Sales Invoice (blank applicable_for, or Sales
+	Invoice) must include the selected company. Customer, Territory, Item
+	Group, and Cost Center follow the same rule: a chosen value has to be in
+	the permitted set, and an empty filter is limited to that set. Blank link
+	values stay included unless strict User Permissions are enabled. Descendants
+	come from get_user_permissions, which expands a tree permission unless
+	hide_descendants is set. A tree filter is then intersected with that set,
+	so choosing a parent cannot reveal a hidden branch.
+	"""
+	if frappe.session.user in ("Administrator", "Guest"):
+		filters.user_permission_constraints = {}
+		return
+
+	strict = cint(frappe.get_system_settings("apply_strict_user_permissions"))
+	allowed_companies = _user_permission_docs("Company")
+	if allowed_companies and filters.company not in allowed_companies:
+		frappe.throw(
+			_("You are not permitted to view sales for Company {0}.").format(frappe.bold(filters.company)),
+			frappe.PermissionError,
+		)
+
+	constraints = {}
+	for key, doctype in SALES_INVOICE_USER_PERMISSION_FIELDS:
+		docs = _user_permission_docs(doctype)
+		if not docs:
+			continue
+		selected = filters.get(key)
+		if selected and selected not in docs:
+			frappe.throw(
+				_("You are not permitted to view sales for {0} {1}.").format(
+					_(doctype), frappe.bold(selected)
+				),
+				frappe.PermissionError,
+			)
+		constraints[key] = {"docs": docs, "strict": strict}
+	filters.user_permission_constraints = constraints
+
+
+def _user_permission_docs(doctype):
+	docs = []
+	seen = set()
+	permissions = frappe.permissions.get_user_permissions(frappe.session.user).get(doctype) or []
+	for permission in permissions:
+		if permission.get("applicable_for") not in (None, "", "Sales Invoice"):
+			continue
+		docname = permission.get("doc")
+		if docname and docname not in seen:
+			seen.add(docname)
+			docs.append(docname)
+	return docs
+
+
+def apply_user_permission_constraints(query, filters, si, sii):
+	constraints = filters.get("user_permission_constraints") or {}
+	fields = {
+		"customer": si.customer,
+		"territory": si.territory,
+		"item_group": sii.item_group,
+		"cost_center": sii.cost_center,
+	}
+	for key, field in fields.items():
+		constraint = constraints.get(key) or {}
+		docs = [docname for docname in (constraint.get("docs") or []) if docname]
+		if not docs:
+			continue
+		permitted = field.isin(docs)
+		if filters.get(key) or constraint.get("strict"):
+			query = query.where(permitted)
+		else:
+			query = query.where((IfNull(field, "") == "") | permitted)
+	return query
 
 
 def apply_allowed_sales_persons(query, sales_person_field, filters):

@@ -26,3 +26,8 @@ class SalesReportsSettings(Document):
 						)
 					)
 				seen[role] = label
+
+	def on_update(self):
+		from sales_reports.install import ensure_see_all_report_access
+
+		ensure_see_all_report_access([row.role for row in (self.see_all_roles or []) if row.role])

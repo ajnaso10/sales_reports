@@ -27,7 +27,11 @@ Link each person like this:
 
 Own Only and Team users with no linked Sales Person get an error. The Sales Person filter defaults to their own node, only offers people in their scope, and is read-only when that scope is a single Sales Person.
 
+The report's reference doctype is **Sales Person**. Sales User and Sales Manager already have report permission there, so they can open it from the desk. Install, migrate, and saving Sales Reports Settings grant that same report permission to every role in the See All table. Add Accounts User or Accounts Manager to See All and they can open the report on the next save. Any other role you add there is allowed to open the report as well.
+
 The first migrate seeds the default roles. `defaults_applied` then stops later migrates from overwriting the tables. The seed lists in `sales_reports/install.py` (`DEFAULT_ROLE_ROWS`) are only that initial fill.
+
+The invoice query still requires the Company filter. User Permissions on Company, Customer, Territory, Item Group, and Cost Center that apply to Sales Invoice are applied as well. A Company User Permission has to include the company selected on the report.
 
 ### Installation
 
