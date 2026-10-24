@@ -4,6 +4,18 @@
 """Install / migrate handlers for Sales Reports."""
 
 import frappe
+from frappe.utils import cint
+
+# Seed values for a new site. Runtime scope is the Sales Reports Settings single,
+# which a System Manager can edit without a code change. These tuples are not
+# read when the report runs.
+DEFAULT_ROLE_ROWS = (
+	("own_only_roles", "Sales User"),
+	("team_roles", "Sales Manager"),
+	("see_all_roles", "System Manager"),
+)
+
+SETTINGS_DOCTYPE = "Sales Reports Settings"
 
 REPORT_NAMES = (
 	"Sales Person Wise Sales Report",
@@ -25,11 +37,32 @@ INSERT_AFTER_FALLBACK = "Sales Analytics"
 
 
 def after_install():
+	ensure_sales_reports_settings()
 	sync_navigation()
 
 
 def after_migrate():
+	ensure_sales_reports_settings()
 	sync_navigation()
+
+
+def ensure_sales_reports_settings():
+	"""Create default role rows once. Later edits in the Single are left alone."""
+	if not frappe.db.exists("DocType", SETTINGS_DOCTYPE):
+		return
+	if cint(frappe.db.get_single_value(SETTINGS_DOCTYPE, "defaults_applied")):
+		return
+
+	doc = frappe.get_doc(SETTINGS_DOCTYPE)
+	for fieldname, role in DEFAULT_ROLE_ROWS:
+		if doc.get(fieldname):
+			continue
+		if frappe.db.exists("Role", role):
+			doc.append(fieldname, {"role": role})
+
+	doc.defaults_applied = 1
+	doc.flags.ignore_permissions = True
+	doc.save(ignore_permissions=True)
 
 
 def sync_navigation():

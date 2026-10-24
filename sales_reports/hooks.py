@@ -10,6 +10,9 @@ app_license = "mit"
 
 required_apps = ["erpnext"]
 
+# Sales Person Wise Sales Report scopes live in the Sales Reports Settings single
+# (Own Only, Team, See All). Defaults are seeded once on install and migrate.
+
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [
 # 	{
@@ -272,4 +275,3 @@ after_uninstall = "sales_reports.uninstall.after_uninstall"
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-

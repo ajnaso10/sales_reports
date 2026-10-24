@@ -1,0 +1,89 @@
+{
+ "actions": [],
+ "creation": "2026-10-24 00:00:00.000000",
+ "description": "Role scopes for Sales Person Wise Sales Report.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "scope_help",
+  "own_only_section",
+  "own_only_roles",
+  "team_section",
+  "team_roles",
+  "see_all_section",
+  "see_all_roles",
+  "defaults_applied"
+ ],
+ "fields": [
+  {
+   "description": "If a user has more than one of these roles, the broadest scope applies: See All, then Team, then Own Only. Administrator always sees every Sales Person. A role that is not listed cannot run Sales Person Wise Sales Report.",
+   "fieldname": "scope_help",
+   "fieldtype": "Section Break",
+   "label": "Role Scope"
+  },
+  {
+   "fieldname": "own_only_section",
+   "fieldtype": "Section Break",
+   "label": "Own Only"
+  },
+  {
+   "description": "These roles see only the Sales Person linked to the logged-in user. Descendants are not included.",
+   "fieldname": "own_only_roles",
+   "fieldtype": "Table",
+   "label": "Own Only Roles",
+   "options": "Sales Reports Role"
+  },
+  {
+   "fieldname": "team_section",
+   "fieldtype": "Section Break",
+   "label": "Team"
+  },
+  {
+   "description": "These roles see their linked Sales Person plus every descendant in the Sales Person tree on this site.",
+   "fieldname": "team_roles",
+   "fieldtype": "Table",
+   "label": "Team Roles",
+   "options": "Sales Reports Role"
+  },
+  {
+   "fieldname": "see_all_section",
+   "fieldtype": "Section Break",
+   "label": "See All"
+  },
+  {
+   "description": "These roles see every Sales Person. Sales Manager is not in this list by default.",
+   "fieldname": "see_all_roles",
+   "fieldtype": "Table",
+   "label": "See All Roles",
+   "options": "Sales Reports Role"
+  },
+  {
+   "default": "0",
+   "fieldname": "defaults_applied",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Defaults Applied",
+   "read_only": 1
+  }
+ ],
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Selling Reports",
+ "name": "Sales Reports Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
