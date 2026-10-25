@@ -4,6 +4,18 @@
 """Install / migrate handlers for Sales Reports."""
 
 import frappe
+from frappe.utils import cint
+
+# Seed values for a new site. Runtime scope is the Sales Reports Settings single,
+# which a System Manager can edit without a code change. These tuples are not
+# read when the report runs.
+DEFAULT_ROLE_ROWS = (
+	("own_only_roles", "Sales User"),
+	("team_roles", "Sales Manager"),
+	("see_all_roles", "System Manager"),
+)
+
+SETTINGS_DOCTYPE = "Sales Reports Settings"
 
 REPORT_NAMES = (
 	"Sales Person Wise Sales Report",
@@ -24,12 +36,175 @@ INSERT_AFTER_BY_REPORT = {
 INSERT_AFTER_FALLBACK = "Sales Analytics"
 
 
+# Desk report gate: frappe.desk.query_report.get_report_doc checks
+# has_permission(ref_doctype, "report") before execute(). Sales Person Wise
+# Sales Report uses Sales Person. Sales User and Sales Manager already have
+# that permission. Every current See All role is granted it here.
+REF_DOCTYPE = "Sales Person"
+ROLE_CHILD_DOCTYPE = "Sales Reports Role"
+BASIC_PERM_TYPES = ("select", "read", "write", "create", "submit", "cancel")
+# Roles shipped on the report. A Custom Role replaces this list, so a new one
+# keeps these roles and then adds any See All role that was missing.
+SHIPPED_REPORT_ROLES = (
+	"Sales User",
+	"Sales Manager",
+	"Accounts User",
+	"Accounts Manager",
+	"System Manager",
+)
+
+
 def after_install():
+	ensure_sales_reports_settings()
+	ensure_see_all_report_access()
 	sync_navigation()
 
 
 def after_migrate():
+	ensure_sales_reports_settings()
+	ensure_see_all_report_access()
 	sync_navigation()
+
+
+def ensure_sales_reports_settings():
+	"""Create default role rows once. Later edits in the Single are left alone."""
+	if not frappe.db.exists("DocType", SETTINGS_DOCTYPE):
+		return
+	if cint(frappe.db.get_single_value(SETTINGS_DOCTYPE, "defaults_applied")):
+		return
+
+	doc = frappe.get_doc(SETTINGS_DOCTYPE)
+	for fieldname, role in DEFAULT_ROLE_ROWS:
+		if doc.get(fieldname):
+			continue
+		if frappe.db.exists("Role", role):
+			doc.append(fieldname, {"role": role})
+
+	doc.defaults_applied = 1
+	doc.flags.ignore_permissions = True
+	doc.save(ignore_permissions=True)
+
+
+def ensure_see_all_report_access(see_all_roles=None):
+	"""Let every See All role pass the desk report gate for this report.
+
+	Called from install, migrate, and Sales Reports Settings.on_update. Migrate
+	still runs it after defaults_applied is set, so an existing site picks up
+	the grant without a re-seed. Removing a role from See All does not revoke
+	the permission: the previous grant is unknown, and execute() still denies
+	a role that is not in any scope list.
+	"""
+	if see_all_roles is None:
+		ensure_sales_reports_settings()
+		see_all_roles = _see_all_roles_from_settings()
+
+	roles = [role for role in see_all_roles if role and frappe.db.exists("Role", role)]
+	_ensure_report_ref_doctype()
+	if frappe.db.exists("DocType", REF_DOCTYPE):
+		for role in roles:
+			_grant_report_permission(REF_DOCTYPE, role)
+		frappe.clear_cache(doctype=REF_DOCTYPE)
+	_ensure_see_all_roles_on_report(roles)
+
+
+def _see_all_roles_from_settings():
+	if not frappe.db.exists("DocType", ROLE_CHILD_DOCTYPE):
+		return []
+	return frappe.get_all(
+		ROLE_CHILD_DOCTYPE,
+		filters={
+			"parent": SETTINGS_DOCTYPE,
+			"parenttype": SETTINGS_DOCTYPE,
+			"parentfield": "see_all_roles",
+		},
+		pluck="role",
+	)
+
+
+def _ensure_report_ref_doctype():
+	report_name = REPORT_NAMES[0]
+	if not frappe.db.exists("Report", report_name):
+		return
+	if frappe.db.get_value("Report", report_name, "ref_doctype") == REF_DOCTYPE:
+		return
+	frappe.db.set_value("Report", report_name, "ref_doctype", REF_DOCTYPE, update_modified=False)
+	frappe.clear_document_cache("Report", report_name)
+
+
+def _grant_report_permission(doctype, role):
+	"""Grant report on doctype without dropping the standard DocPerm rows.
+
+	Custom DocPerm replaces DocPerm once any custom row exists, so the standard
+	rows are copied first. A row with only report set fails Frappe's permission
+	validation, so a new row also gets select.
+	"""
+	from frappe.permissions import add_permission, setup_custom_perms, update_permission_property
+
+	setup_custom_perms(doctype)
+	row = frappe.db.get_value(
+		"Custom DocPerm",
+		{"parent": doctype, "role": role, "permlevel": 0, "if_owner": 0},
+		["name", "report", *BASIC_PERM_TYPES],
+		as_dict=True,
+	)
+	if not row:
+		add_permission(doctype, role, 0, "select")
+		row = frappe.db.get_value(
+			"Custom DocPerm",
+			{"parent": doctype, "role": role, "permlevel": 0, "if_owner": 0},
+			["name", "report", *BASIC_PERM_TYPES],
+			as_dict=True,
+		)
+	if not row:
+		return
+
+	if not any(cint(row.get(ptype)) for ptype in BASIC_PERM_TYPES):
+		update_permission_property(doctype, role, 0, "select", 1)
+	if not cint(row.report):
+		update_permission_property(doctype, role, 0, "report", 1)
+
+
+def _ensure_see_all_roles_on_report(see_all_roles):
+	"""Report.is_permitted() requires a role on the report, or on its Custom Role.
+
+	Custom Role replaces the standard role list, so a new Custom Role keeps the
+	standard roles and adds any See All role that was missing. Accounts User and
+	Accounts Manager are already on the report. A role the client adds to See All
+	is appended. Existing Custom Role rows are left in place.
+	"""
+	report_name = REPORT_NAMES[0]
+	if not frappe.db.exists("Report", report_name):
+		return
+
+	wanted = [role for role in see_all_roles if role and frappe.db.exists("Role", role)]
+	report = frappe.get_doc("Report", report_name)
+	standard = {row.role for row in report.roles if row.role} | set(SHIPPED_REPORT_ROLES)
+	custom_name = frappe.db.get_value("Custom Role", {"report": report_name}, "name")
+	if custom_name:
+		doc = frappe.get_doc("Custom Role", custom_name)
+		have = {row.role for row in doc.roles}
+		changed = False
+		for role in wanted:
+			if role not in have:
+				doc.append("roles", {"role": role})
+				changed = True
+		if changed:
+			doc.flags.ignore_permissions = True
+			doc.save(ignore_permissions=True)
+		return
+
+	missing = [role for role in wanted if role not in standard]
+	if not missing:
+		return
+
+	frappe.get_doc(
+		{
+			"doctype": "Custom Role",
+			"report": report_name,
+			"ref_doctype": REF_DOCTYPE,
+			"roles": [{"role": role} for role in sorted(standard | set(missing))],
+		}
+	).insert(ignore_permissions=True)
 
 
 def sync_navigation():
